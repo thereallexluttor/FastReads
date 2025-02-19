@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+
+import 'read_page.dart';
 
 class MenuUi extends StatefulWidget {
   const MenuUi({super.key});
@@ -12,6 +15,32 @@ class MenuUi extends StatefulWidget {
 
 class _MenuUiState extends State<MenuUi> {
   List<String> uploadedBooks = [];
+  List<String> filePaths = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBooks();
+  }
+
+  Future<void> _loadBooks() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String>? books = prefs.getStringList('uploaded_books');
+    List<String>? paths = prefs.getStringList('book_paths');
+
+    if (books != null && paths != null) {
+      setState(() {
+        uploadedBooks = books;
+        filePaths = paths;
+      });
+    }
+  }
+
+  Future<void> _saveBooks() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('uploaded_books', uploadedBooks);
+    await prefs.setStringList('book_paths', filePaths);
+  }
 
   Future<void> _pickFile() async {
     try {
@@ -20,15 +49,31 @@ class _MenuUiState extends State<MenuUi> {
       );
 
       if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          uploadedBooks.add(result.files.single.name);
-        });
+        String fileName = result.files.single.name;
+        String filePath = result.files.single.path ?? "";
+
+        if (filePath.isNotEmpty) {
+          setState(() {
+            uploadedBooks.add(fileName);
+            filePaths.add(filePath);
+          });
+          _saveBooks();
+        }
       } else {
         print("No file selected.");
       }
     } catch (e) {
       print("Error picking file: $e");
     }
+  }
+
+  void _openBook(int index) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReadPage(filePath: filePaths[index]),
+      ),
+    );
   }
 
   @override
@@ -48,7 +93,9 @@ class _MenuUiState extends State<MenuUi> {
                 color: Colors.black,
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
+            const Divider(color: Colors.grey, thickness: 0.5),
+            const SizedBox(height: 10),
             Expanded(
               child: uploadedBooks.isEmpty
                   ? Center(
@@ -64,10 +111,12 @@ class _MenuUiState extends State<MenuUi> {
                       itemCount: uploadedBooks.length,
                       itemBuilder: (context, index) {
                         return ListTile(
-                          title: Text(uploadedBooks[index],
-                              style: GoogleFonts.poppins(fontSize: 16)),
-                          leading:
-                              const Icon(Icons.book, color: Colors.deepPurple),
+                          title: Text(
+                            "📖 ${uploadedBooks[index]}",
+                            style: GoogleFonts.poppins(fontSize: 16),
+                          ),
+                          onTap: () =>
+                              _openBook(index), // Abre la lectura del libro
                         );
                       },
                     ),
