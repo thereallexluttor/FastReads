@@ -42,6 +42,8 @@ dependencies:
   epubx: ^4.0.0
   pdfx: ^2.8.0
   shared_preferences: ^2.5.2
+  pdf: ^3.8.4
+  syncfusion_flutter_pdf: ^28.2.6
 
 dev_dependencies:
   flutter_test:
