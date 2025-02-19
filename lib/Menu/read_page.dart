@@ -45,11 +45,14 @@ class _ReadPageState extends State<ReadPage> {
         content = await _readEpub(file);
       } else if (extension == ".pdf") {
         content = await _readPdf(file);
+      } else {
+        content = "❌ Error: Formato de archivo no compatible.";
       }
 
       setState(() {
         bookContent = content;
-        words = content.split(RegExp(r'\s+')); // Divide en palabras
+        words =
+            content.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
       });
     } catch (e) {
       setState(() {
@@ -59,41 +62,52 @@ class _ReadPageState extends State<ReadPage> {
   }
 
   Future<String> _readEpub(File file) async {
-    List<int> bytes = await file.readAsBytes();
-    EpubBook epubBook = await EpubReader.readBook(bytes);
+    try {
+      List<int> bytes = await file.readAsBytes();
+      EpubBook epubBook = await EpubReader.readBook(bytes);
 
-    String title = epubBook.Title ?? "Título desconocido";
-    String author = epubBook.Author?.isNotEmpty == true
-        ? epubBook.Author!
-        : "Autor desconocido";
-    String content = "";
+      String title = epubBook.Title ?? "Título desconocido";
+      String author = epubBook.Author?.isNotEmpty == true
+          ? epubBook.Author!
+          : "Autor desconocido";
+      String content = "";
 
-    if (epubBook.Chapters?.isNotEmpty ?? false) {
-      for (var chapter in epubBook.Chapters!) {
-        content += "${chapter.Title ?? "Capítulo"}\n";
-        content +=
-            chapter.HtmlContent?.replaceAll(RegExp(r'<[^>]*>'), '') ?? "";
-        content += "\n\n";
+      if (epubBook.Chapters?.isNotEmpty ?? false) {
+        for (var chapter in epubBook.Chapters!) {
+          content += "${chapter.Title ?? "Capítulo"}\n";
+          content +=
+              chapter.HtmlContent?.replaceAll(RegExp(r'<[^>]*>'), '') ?? "";
+          content += "\n\n";
+        }
+      } else {
+        content = "No hay capítulos disponibles.";
       }
-    } else {
-      content = "No hay capítulos disponibles.";
-    }
 
-    return "📚 $title\n👤 $author\n\n$content";
+      return "📚 $title\n👤 $author\n\n$content";
+    } catch (e) {
+      return "❌ Error al leer EPUB: $e";
+    }
   }
 
   Future<String> _readPdf(File file) async {
-    List<int> bytes = await file.readAsBytes();
-    PdfDocument pdf = PdfDocument(inputBytes: bytes);
+    try {
+      List<int> bytes = await file.readAsBytes();
+      PdfDocument pdf = PdfDocument(inputBytes: bytes);
 
-    String content = "";
-    for (int i = 0; i < pdf.pages.count; i++) {
-      content += PdfTextExtractor(pdf).extractText(startPageIndex: i) ?? "";
-      content += "\n\n";
+      StringBuffer content = StringBuffer();
+      for (int i = 0; i < pdf.pages.count; i++) {
+        String? text = PdfTextExtractor(pdf).extractText(startPageIndex: i);
+        if (text != null && text.isNotEmpty) {
+          content.writeln(text);
+        }
+      }
+      pdf.dispose();
+      return content.isNotEmpty
+          ? content.toString()
+          : "No se pudo extraer texto del PDF.";
+    } catch (e) {
+      return "❌ Error al leer PDF: $e";
     }
-
-    pdf.dispose();
-    return content.isNotEmpty ? content : "No se pudo extraer texto del PDF.";
   }
 
   void _startReading() {
