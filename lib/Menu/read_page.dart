@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'dart:async';
-import 'package:epubx/epubx.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
-import 'package:path/path.dart' as path;
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
+import 'package:path/path.dart' as path;
+import 'package:flutter_math_fork/flutter_math.dart';
 
 class ReadPage extends StatefulWidget {
   final String filePath;
@@ -21,20 +21,25 @@ class _ReadPageState extends State<ReadPage> {
   int currentIndex = 0;
   Timer? _timer;
   bool isPlaying = false;
-  int wpm = 200; // Palabras por minuto
+  int wpm = 200; // Words per minute
   int currentPage = 0;
   List<String> pages = [];
   String fileType = "";
-  bool showTextMode = false;
+  double _zoomLevel = 1.0;
+  bool isLoading = true; // Loading flag
 
-  // Add new variables for page range selection
+  // Variables for page range (PDF mode)
   int startPage = 0;
   int endPage = 0;
   int totalPages = 0;
   bool usePageRange = false;
-  PdfDocument? pdfDocument;
-  EpubBook? epubBook;
   final PdfViewerController _pdfViewerController = PdfViewerController();
+
+  // ValueNotifier to update the word-by-word dialog
+  final ValueNotifier<int> updateNotifier = ValueNotifier<int>(0);
+
+  // Selected text for word-by-word reading
+  String? selectedText;
 
   @override
   void initState() {
@@ -45,7 +50,7 @@ class _ReadPageState extends State<ReadPage> {
   @override
   void dispose() {
     _timer?.cancel();
-    pdfDocument?.dispose();
+    updateNotifier.dispose();
     super.dispose();
   }
 
@@ -55,6 +60,7 @@ class _ReadPageState extends State<ReadPage> {
       if (!(await file.exists())) {
         setState(() {
           bookContent = "❌ Error: El archivo no existe.";
+          isLoading = false;
         });
         return;
       }
@@ -63,9 +69,7 @@ class _ReadPageState extends State<ReadPage> {
       fileType = extension;
       String content = "Formato no compatible.";
 
-      if (extension == ".epub") {
-        content = await _readEpub(file);
-      } else if (extension == ".pdf") {
+      if (extension == ".pdf") {
         content = await _readPdf(file);
       } else {
         content = "❌ Error: Formato de archivo no compatible.";
@@ -76,58 +80,44 @@ class _ReadPageState extends State<ReadPage> {
         pages = content.split(RegExp(r'\n{2,}'));
         totalPages = pages.length;
         endPage = totalPages - 1;
+        // Initialize words with the content of the first page
         words = pages.isNotEmpty
             ? pages[currentPage]
                 .split(RegExp(r'\s+'))
                 .where((w) => w.isNotEmpty)
                 .toList()
             : [];
+        isLoading = false;
       });
     } catch (e) {
       setState(() {
         bookContent = "❌ Error al cargar el archivo: $e";
+        isLoading = false;
       });
-    }
-  }
-
-  Future<String> _readEpub(File file) async {
-    try {
-      List<int> bytes = await file.readAsBytes();
-      epubBook = await EpubReader.readBook(bytes);
-      String content = "";
-
-      if (epubBook?.Chapters?.isNotEmpty ?? false) {
-        for (var chapter in epubBook!.Chapters!) {
-          content += "${chapter.Title ?? "Capítulo"}\n";
-          content +=
-              chapter.HtmlContent?.replaceAll(RegExp(r'<[^>]*>'), '') ?? "";
-          content += "\n\n";
-        }
-      } else {
-        content = "No hay capítulos disponibles.";
-      }
-      return content;
-    } catch (e) {
-      return "❌ Error al leer EPUB: $e";
     }
   }
 
   Future<String> _readPdf(File file) async {
     try {
       List<int> bytes = await file.readAsBytes();
-      pdfDocument = PdfDocument(inputBytes: bytes);
+      PdfDocument pdfDocument = PdfDocument(inputBytes: bytes);
       StringBuffer content = StringBuffer();
 
-      totalPages = pdfDocument!.pages.count;
+      totalPages = pdfDocument.pages.count;
       endPage = totalPages - 1;
 
-      for (int i = 0; i < pdfDocument!.pages.count; i++) {
-        String? text =
-            PdfTextExtractor(pdfDocument!).extractText(startPageIndex: i);
+      for (int i = 0; i < pdfDocument.pages.count; i++) {
+        // Extract text from each page
+        String? text = PdfTextExtractor(pdfDocument).extractText(
+          startPageIndex: i,
+          endPageIndex: i,
+        );
         if (text != null && text.isNotEmpty) {
-          content.writeln(text);
+          content.writeln(text.trim());
+          content.writeln("\n"); // Add spacing between pages
         }
       }
+      pdfDocument.dispose(); // Dispose to free resources
 
       return content.isNotEmpty
           ? content.toString()
@@ -137,44 +127,214 @@ class _ReadPageState extends State<ReadPage> {
     }
   }
 
-  void _startReading() {
-    if (words.isEmpty) return;
+  void _updateTextPage() {
     _stopReading();
-    setState(() => isPlaying = true);
-
-    _timer =
-        Timer.periodic(Duration(milliseconds: (60000 / wpm).round()), (timer) {
-      if (currentIndex < words.length - 1) {
-        setState(() => currentIndex++);
-      } else {
-        // Move to next page if we're at the end of words
-        if (currentPage < endPage) {
-          setState(() {
-            currentPage++;
-            currentIndex = 0;
-            _loadCurrentPageWords();
-          });
-        } else {
-          _stopReading();
-        }
-      }
-    });
-  }
-
-  void _loadCurrentPageWords() {
-    if (pages.isNotEmpty && currentPage < pages.length) {
+    setState(() {
       words = pages[currentPage]
           .split(RegExp(r'\s+'))
           .where((w) => w.isNotEmpty)
           .toList();
-    } else {
-      words = [];
+      currentIndex = 0;
+    });
+  }
+
+  void _goToPreviousPage() {
+    if (currentPage > 0) {
+      setState(() {
+        currentPage--;
+      });
+      _updateTextPage();
     }
+  }
+
+  void _goToNextPage() {
+    if (currentPage < totalPages - 1) {
+      setState(() {
+        currentPage++;
+      });
+      _updateTextPage();
+    }
+  }
+
+  void _startReadingFromSelectedText(String text) {
+    setState(() {
+      selectedText = text;
+      words = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+      currentIndex = 0;
+    });
+    _startReading();
+  }
+
+  void _startReadingForRange() {
+    if (usePageRange &&
+        startPage >= 0 &&
+        endPage < totalPages &&
+        startPage <= endPage) {
+      setState(() {
+        words = List<String>.from(pages
+            .sublist(startPage - 2, endPage)
+            .expand((page) => page.split(RegExp(r'\s+')))
+            .where((w) => w.isNotEmpty));
+        currentIndex = 0;
+      });
+
+      // Jump to the start page in the PDF viewer
+      _pdfViewerController.jumpToPage(startPage + 1);
+
+      // Start reading
+      _startReading();
+    } else {
+      setState(() {
+        bookContent = "❌ Error: Rango de páginas inválido.";
+      });
+    }
+  }
+
+  void _startReading() {
+    if (words.isEmpty) return;
+    _stopReading(); // Cancel any existing timer
+    setState(() => isPlaying = true);
+
+    _timer = Timer.periodic(
+      Duration(milliseconds: (60000 / wpm).round()),
+      (timer) {
+        if (currentIndex < words.length - 1) {
+          setState(() {
+            currentIndex++;
+          });
+          updateNotifier.value++; // Trigger update
+        } else {
+          _stopReading();
+        }
+      },
+    );
   }
 
   void _stopReading() {
     _timer?.cancel();
     setState(() => isPlaying = false);
+    updateNotifier.value++; // Notify listeners that reading has stopped
+  }
+
+  void _showPageRangeDialog() {
+    int tempStartPage = startPage + 1; // For display (1-based)
+    int tempEndPage = endPage + 1;
+    // Local controllers to show the current values
+    TextEditingController startController =
+        TextEditingController(text: tempStartPage.toString());
+    TextEditingController endController =
+        TextEditingController(text: tempEndPage.toString());
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Seleccionar rango de páginas"),
+        content: StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Container(
+              width: 300,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    title: const Text("Usar rango de páginas"),
+                    value: usePageRange,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        usePageRange = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          enabled: usePageRange,
+                          decoration: InputDecoration(
+                            labelText: "Página inicial",
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                          keyboardType: TextInputType.number,
+                          controller: startController,
+                          onChanged: (value) {
+                            tempStartPage = int.tryParse(value) ?? 1;
+                            if (tempStartPage < 1) tempStartPage = 1;
+                            if (tempStartPage > totalPages) {
+                              tempStartPage = totalPages;
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: TextField(
+                          enabled: usePageRange,
+                          decoration: InputDecoration(
+                            labelText: "Página final",
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                          keyboardType: TextInputType.number,
+                          controller: endController,
+                          onChanged: (value) {
+                            tempEndPage = int.tryParse(value) ?? totalPages;
+                            if (tempEndPage < tempStartPage) {
+                              tempEndPage = tempStartPage;
+                            }
+                            if (tempEndPage > totalPages) {
+                              tempEndPage = totalPages;
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "Total páginas: $totalPages",
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancelar"),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            onPressed: () {
+              setState(() {
+                startPage = tempStartPage - 1; // Convert back to 0-based
+                endPage = tempEndPage - 1;
+              });
+              if (usePageRange && fileType == ".pdf") {
+                _pdfViewerController.jumpToPage(startPage);
+                _startReadingForRange(); // Start word-by-word reading automatically
+              }
+              Navigator.pop(context);
+            },
+            child: const Text("Aplicar"),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildPdfViewer() {
@@ -183,206 +343,249 @@ class _ReadPageState extends State<ReadPage> {
         SfPdfViewer.file(
           File(widget.filePath),
           controller: _pdfViewerController,
+          onTextSelectionChanged: (PdfTextSelectionChangedDetails details) {
+            if (details.selectedText != null) {
+              setState(() {
+                selectedText = details.selectedText;
+              });
+            }
+          },
+          pageLayoutMode: PdfPageLayoutMode.continuous,
+          onPageChanged: (PdfPageChangedDetails details) {
+            setState(() {
+              currentPage = details.newPageNumber - 1;
+            });
+          },
+          scrollDirection: PdfScrollDirection.vertical,
+          canShowScrollHead: true,
+          canShowScrollStatus: true,
+          enableDoubleTapZooming: true,
         ),
         Positioned(
-          top: 10,
-          right: 10,
-          child: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.8),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              "Página ${_pdfViewerController.pageNumber} de $totalPages",
-              style: const TextStyle(fontSize: 14),
-            ),
-          ),
+          top: 16,
+          right: 16,
+          child: _buildZoomControls(),
+        ),
+        Positioned(
+          bottom: 16,
+          left: 0,
+          right: 0,
+          child: _buildPageNavigator(),
         ),
       ],
     );
   }
 
-  void _showPageRangeDialog() {
-    showDialog(
-      context: context,
-      builder: (context) {
-        int tempStartPage = startPage;
-        int tempEndPage = endPage;
-
-        return AlertDialog(
-          title: const Text("Seleccionar rango de páginas"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  const Text("Desde: "),
-                  Expanded(
-                    child: Slider(
-                      value: tempStartPage.toDouble(),
-                      min: 0,
-                      max: (totalPages - 1).toDouble(),
-                      divisions: totalPages > 1 ? totalPages - 1 : 1,
-                      label: (tempStartPage + 1).toString(),
-                      onChanged: (value) {
-                        tempStartPage = value.toInt();
-                        // Ensure endPage is always >= startPage
-                        if (tempEndPage < tempStartPage) {
-                          tempEndPage = tempStartPage;
-                        }
-                        (context as Element).markNeedsBuild();
-                      },
-                    ),
-                  ),
-                  Text((tempStartPage + 1).toString()),
-                ],
-              ),
-              Row(
-                children: [
-                  const Text("Hasta: "),
-                  Expanded(
-                    child: Slider(
-                      value: tempEndPage.toDouble(),
-                      min: tempStartPage.toDouble(),
-                      max: (totalPages - 1).toDouble(),
-                      divisions: totalPages - tempStartPage > 1
-                          ? totalPages - tempStartPage
-                          : 1,
-                      label: (tempEndPage + 1).toString(),
-                      onChanged: (value) {
-                        tempEndPage = value.toInt();
-                        (context as Element).markNeedsBuild();
-                      },
-                    ),
-                  ),
-                  Text((tempEndPage + 1).toString()),
-                ],
-              ),
-            ],
+  Widget _buildZoomControls() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.8),
+        borderRadius: BorderRadius.circular(4),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancelar"),
-            ),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  startPage = tempStartPage;
-                  endPage = tempEndPage;
-                  currentPage = startPage;
-                  usePageRange = true;
-                  _loadCurrentPageWords();
-                });
-                Navigator.pop(context);
-              },
-              child: const Text("Aplicar"),
-            ),
-          ],
-        );
-      },
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildZoomButton(Icons.zoom_in, () {
+            _pdfViewerController.zoomLevel =
+                (_pdfViewerController.zoomLevel + 0.25).clamp(0.5, 3.0);
+            setState(() {
+              _zoomLevel = _pdfViewerController.zoomLevel;
+            });
+          }),
+          const SizedBox(height: 8),
+          Text(
+            '${(_zoomLevel * 100).toInt()}%',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          _buildZoomButton(Icons.zoom_out, () {
+            _pdfViewerController.zoomLevel =
+                (_pdfViewerController.zoomLevel - 0.25).clamp(0.5, 3.0);
+            setState(() {
+              _zoomLevel = _pdfViewerController.zoomLevel;
+            });
+          }),
+          const SizedBox(height: 8),
+          _buildZoomButton(Icons.fit_screen, () {
+            _pdfViewerController.zoomLevel = 1.0;
+            setState(() {
+              _zoomLevel = 1.0;
+            });
+          }),
+        ],
+      ),
     );
   }
 
-  void _showWpmSettingsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) {
-        int tempWpm = wpm;
+  Widget _buildZoomButton(IconData icon, VoidCallback onPressed) {
+    return Material(
+      color: Colors.deepPurple.withOpacity(0.1),
+      borderRadius: BorderRadius.circular(4),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onPressed,
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          child: Icon(
+            icon,
+            color: Colors.deepPurple,
+            size: 24,
+          ),
+        ),
+      ),
+    );
+  }
 
-        return AlertDialog(
-          title: const Text("Configurar velocidad de lectura"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+  Widget _buildPageNavigator() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(4),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                "$tempWpm palabras por minuto",
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                "Página ${_pdfViewerController.pageNumber} de $totalPages",
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
               ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text("100"),
-                  Expanded(
-                    child: Slider(
-                      value: tempWpm.toDouble(),
-                      min: 100,
-                      max: 800,
-                      divisions: 14,
-                      onChanged: (value) {
-                        tempWpm = value.toInt();
-                        (context as Element).markNeedsBuild();
-                      },
+              if (usePageRange)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.deepPurple.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    "Rango: ${startPage + 1}-${endPage + 1}",
+                    style: const TextStyle(
+                      color: Colors.deepPurple,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-                  const Text("800"),
-                ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: totalPages > 0
+                ? (_pdfViewerController.pageNumber - 1) / (totalPages - 1)
+                : 0,
+            backgroundColor: Colors.grey.shade200,
+            valueColor: const AlwaysStoppedAnimation(Colors.deepPurple),
+            borderRadius: BorderRadius.circular(2),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _buildNavigationButton(
+                Icons.skip_previous,
+                "Primera página",
+                () => _pdfViewerController
+                    .jumpToPage(usePageRange ? startPage + 1 : 1),
               ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _wpmPresetButton(
-                      150, tempWpm, (val) => tempWpm = val, context),
-                  _wpmPresetButton(
-                      200, tempWpm, (val) => tempWpm = val, context),
-                  _wpmPresetButton(
-                      300, tempWpm, (val) => tempWpm = val, context),
-                  _wpmPresetButton(
-                      400, tempWpm, (val) => tempWpm = val, context),
-                ],
+              _buildNavigationButton(
+                Icons.arrow_back,
+                "Página anterior",
+                () {
+                  if (_pdfViewerController.pageNumber > 1) {
+                    _pdfViewerController.previousPage();
+                  }
+                },
+              ),
+              _buildNavigationButton(
+                Icons.filter_list,
+                "Rango",
+                _showPageRangeDialog,
+              ),
+              _buildNavigationButton(
+                Icons.arrow_forward,
+                "Página siguiente",
+                () {
+                  if (_pdfViewerController.pageNumber < totalPages) {
+                    _pdfViewerController.nextPage();
+                  }
+                },
+              ),
+              _buildNavigationButton(
+                Icons.skip_next,
+                "Última página",
+                () => _pdfViewerController
+                    .jumpToPage(usePageRange ? endPage + 1 : totalPages),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancelar"),
-            ),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  wpm = tempWpm;
-                  // If already reading, restart with new speed
-                  if (isPlaying) {
-                    _stopReading();
-                    _startReading();
-                  }
-                });
-                Navigator.pop(context);
-              },
-              child: const Text("Aplicar"),
-            ),
-          ],
-        );
-      },
+        ],
+      ),
     );
   }
 
-  Widget _wpmPresetButton(int presetWpm, int currentWpm,
-      Function(int) onSelected, BuildContext dialogContext) {
-    bool isSelected = presetWpm == currentWpm;
-
-    return ElevatedButton(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: isSelected ? Colors.deepPurple : Colors.grey.shade200,
-        foregroundColor: isSelected ? Colors.white : Colors.black,
+  Widget _buildNavigationButton(
+      IconData icon, String tooltip, VoidCallback onPressed) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(4),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: onPressed,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            child: Icon(
+              icon,
+              color: Colors.deepPurple,
+              size: 24,
+            ),
+          ),
+        ),
       ),
-      onPressed: () {
-        onSelected(presetWpm);
-        (dialogContext as Element).markNeedsBuild();
-      },
-      child: Text("$presetWpm"),
     );
+  }
+
+  Widget _buildMathRenderer(String mathExpression) {
+    return Center(
+      child: Math.tex(
+        mathExpression,
+        textStyle: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
+  // Improved heuristic for math expressions
+  bool _isMathExpression(String word) {
+    return word.startsWith('\\') || word.contains('^') || word.contains('_');
   }
 
   Widget _buildWordByWordReader() {
-    if (words.isEmpty)
+    if (words.isEmpty) {
       return const Center(child: Text("No hay contenido disponible"));
-
+    }
     return Center(
       child: Container(
         constraints: const BoxConstraints(maxWidth: 600),
@@ -392,27 +595,35 @@ class _ReadPageState extends State<ReadPage> {
             const SizedBox(height: 40),
             Card(
               elevation: 5,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(20.0),
-                child: Text(
-                  currentIndex < words.length ? words[currentIndex] : "",
-                  style: const TextStyle(
-                      fontSize: 36, fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
+                child: currentIndex < words.length
+                    ? _isMathExpression(words[currentIndex])
+                        ? _buildMathRenderer(words[currentIndex])
+                        : Text(
+                            words[currentIndex],
+                            style: const TextStyle(
+                                fontSize: 36, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          )
+                    : const Text("Fin de la lectura"),
               ),
             ),
             const SizedBox(height: 40),
             LinearProgressIndicator(
               value: words.isEmpty ? 0 : currentIndex / words.length,
               backgroundColor: Colors.grey.shade300,
-              valueColor:
-                  const AlwaysStoppedAnimation<Color>(Colors.deepPurple),
+              valueColor: const AlwaysStoppedAnimation(Colors.deepPurple),
+              borderRadius: BorderRadius.circular(4),
+              minHeight: 8,
             ),
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Text(
-                "Palabra ${currentIndex + 1} de ${words.length} | Página ${currentPage + 1} de ${endPage + 1}",
+                "Palabra ${currentIndex + 1} de ${words.length}",
                 style: const TextStyle(fontSize: 14, color: Colors.grey),
               ),
             ),
@@ -422,144 +633,297 @@ class _ReadPageState extends State<ReadPage> {
     );
   }
 
+  void _showWordByWordDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(4),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.fast_forward, color: Colors.deepPurple),
+            const SizedBox(width: 8),
+            const Text("Lectura palabra por palabra"),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: ValueListenableBuilder(
+            valueListenable: updateNotifier,
+            builder: (context, value, child) {
+              return _buildWordByWordReader();
+            },
+          ),
+        ),
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildWPMControl(),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              TextButton.icon(
+                icon: const Icon(Icons.text_format),
+                label: const Text("Usar selección"),
+                onPressed: () {
+                  if (selectedText != null) {
+                    _startReadingFromSelectedText(selectedText!);
+                  }
+                },
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.deepPurple,
+                ),
+              ),
+              ElevatedButton.icon(
+                icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                label: Text(isPlaying ? "Pausar" : "Iniciar"),
+                onPressed: () {
+                  if (usePageRange) {
+                    _startReadingForRange();
+                  } else {
+                    _startReading();
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.close),
+                label: const Text("Cerrar"),
+                onPressed: () {
+                  _stopReading();
+                  Navigator.pop(context);
+                },
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWPMControl() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.remove),
+            onPressed: () {
+              setState(() {
+                wpm = (wpm - 25).clamp(50, 800);
+              });
+              if (isPlaying) {
+                _stopReading();
+                _startReading();
+              }
+            },
+            tooltip: "Reducir velocidad",
+            color: Colors.deepPurple,
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(4),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Text(
+              "$wpm WPM",
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: () {
+              setState(() {
+                wpm = (wpm + 25).clamp(50, 800);
+              });
+              if (isPlaying) {
+                _stopReading();
+                _startReading();
+              }
+            },
+            tooltip: "Aumentar velocidad",
+            color: Colors.deepPurple,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Read Book"),
-        backgroundColor: Colors.deepPurple,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.speed),
-            tooltip: "Configurar velocidad",
-            onPressed: _showWpmSettingsDialog,
+        title: Text(
+          path.basename(widget.filePath),
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
           ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        backgroundColor: Colors.deepPurple,
+        elevation: 0,
+        actions: [
           IconButton(
             icon: const Icon(Icons.filter_list),
             tooltip: "Seleccionar rango de páginas",
             onPressed: _showPageRangeDialog,
           ),
-          if (fileType == ".pdf")
-            IconButton(
-              icon: const Icon(Icons.text_fields),
-              tooltip: "Cambiar modo de visualización",
-              onPressed: () {
-                setState(() {
-                  showTextMode = !showTextMode;
-                });
-              },
-            ),
           IconButton(
             icon: const Icon(Icons.text_format),
             tooltip: "Modo palabra por palabra",
+            onPressed: _showWordByWordDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.more_vert),
+            tooltip: "Más opciones",
             onPressed: () {
-              showDialog(
+              showModalBottomSheet(
                 context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text("Lectura palabra por palabra"),
-                  content: Container(
-                    width: double.maxFinite,
-                    height: 400,
-                    child: _buildWordByWordReader(),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(4)),
+                ),
+                builder: (context) => Container(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.bookmark),
+                        title: const Text("Añadir marcador"),
+                        onTap: () {
+                          Navigator.pop(context);
+                          // Implement bookmark functionality
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.text_fields),
+                        title: const Text("Ajustes de texto"),
+                        onTap: () {
+                          Navigator.pop(context);
+                          // Implement text settings
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.info_outline),
+                        title: const Text("Información del documento"),
+                        onTap: () {
+                          Navigator.pop(context);
+                          // Show document info
+                        },
+                      ),
+                    ],
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: isPlaying ? _stopReading : _startReading,
-                      child: Text(isPlaying ? "⏸ Pausar" : "▶ Iniciar"),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text("Cerrar"),
-                    ),
-                  ],
                 ),
               );
             },
           ),
         ],
       ),
-      body: fileType == ".pdf" && !showTextMode
-          ? _buildPdfViewer()
-          : Column(
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: SingleChildScrollView(
-                      child: Text(
-                        pages.isNotEmpty && currentPage < pages.length
-                            ? pages[currentPage]
-                            : "📖 Cargando...",
-                        textAlign: TextAlign.left,
-                        style: const TextStyle(fontSize: 18),
-                      ),
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.all(8.0),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    border:
-                        Border(top: BorderSide(color: Colors.grey.shade300)),
-                  ),
-                  child: Column(
-                    children: [
-                      if (usePageRange)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : fileType == ".pdf"
+              ? _buildPdfViewer()
+              : Column(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: SingleChildScrollView(
                           child: Text(
-                            "Rango seleccionado: ${startPage + 1} - ${endPage + 1} de $totalPages",
-                            style: TextStyle(
-                                fontSize: 12, color: Colors.grey.shade700),
+                            pages.isNotEmpty && currentPage < pages.length
+                                ? pages[currentPage]
+                                : "📖 Cargando...",
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(fontSize: 18),
                           ),
                         ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.all(8.0),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        border: Border(
+                          top: BorderSide(color: Colors.grey.shade300),
+                        ),
+                      ),
+                      child: Column(
                         children: [
-                          IconButton(
-                            onPressed: () => setState(() {
-                              currentPage = currentPage > startPage
-                                  ? currentPage - 1
-                                  : startPage;
-                              _loadCurrentPageWords();
-                            }),
-                            icon: const Icon(Icons.arrow_back),
-                            tooltip: "Página anterior",
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                onPressed: _goToPreviousPage,
+                                icon: const Icon(Icons.arrow_back),
+                                tooltip: "Página anterior",
+                              ),
+                              Text(
+                                "Página ${currentPage + 1} de $totalPages",
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              IconButton(
+                                onPressed: _goToNextPage,
+                                icon: const Icon(Icons.arrow_forward),
+                                tooltip: "Página siguiente",
+                              ),
+                            ],
                           ),
-                          Text(
-                            "Página ${currentPage + 1} de ${totalPages}",
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          IconButton(
-                            onPressed: () => setState(() {
-                              currentPage = currentPage < endPage
-                                  ? currentPage + 1
-                                  : endPage;
-                              _loadCurrentPageWords();
-                            }),
-                            icon: const Icon(Icons.arrow_forward),
-                            tooltip: "Página siguiente",
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepPurple,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size(200, 45),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                            onPressed: isPlaying ? _stopReading : _startReading,
+                            icon: Icon(
+                                isPlaying ? Icons.pause : Icons.play_arrow),
+                            label: Text(isPlaying
+                                ? "Pausar lectura"
+                                : "Iniciar lectura ($wpm WPM)"),
                           ),
                         ],
                       ),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurple,
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(200, 45),
-                        ),
-                        onPressed: isPlaying ? _stopReading : _startReading,
-                        icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                        label: Text(isPlaying
-                            ? "Pausar lectura"
-                            : "Iniciar lectura ($wpm WPM)"),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
     );
   }
 }
