@@ -17,8 +17,6 @@ class ReadPage extends StatefulWidget {
 class _ReadPageState extends State<ReadPage>
     with SingleTickerProviderStateMixin {
   final PdfViewerController _pdfViewerController = PdfViewerController();
-
-  /// En vez de 'late', usamos `AnimationController?` para evitar el error de inicialización tardía.
   AnimationController? _animationController;
   Animation<double>? _fadeAnimation;
 
@@ -50,7 +48,7 @@ class _ReadPageState extends State<ReadPage>
       CurvedAnimation(parent: _animationController!, curve: Curves.easeIn),
     );
 
-    // Por si acaso, establecemos el valor inicial de la animación en 0
+    // Valor inicial de la animación en 0
     _animationController!.value = 0.0;
 
     // Verificamos si el archivo PDF existe
@@ -98,7 +96,6 @@ class _ReadPageState extends State<ReadPage>
       _showReader = show;
     });
 
-    // Antes de usar el controlador, verificamos que no sea nulo
     if (_animationController == null) return;
 
     if (_animationController!.isAnimating) {
@@ -197,7 +194,6 @@ class _ReadPageState extends State<ReadPage>
   void dispose() {
     _timer?.cancel();
     _pdfViewerController.dispose();
-    // Eliminamos el controlador de animación de forma segura
     _animationController?.dispose();
     super.dispose();
   }
@@ -451,6 +447,7 @@ class _ReadPageState extends State<ReadPage>
     );
   }
 
+  /// Aquí eliminamos el fade entre palabras, manteniendo el cambio instantáneo.
   Widget _buildWordDisplay() {
     if (!isReading ||
         words.isEmpty ||
@@ -496,7 +493,7 @@ class _ReadPageState extends State<ReadPage>
 
     final currentWord = words[currentWordIndex - 1];
 
-    // Encuentra un punto de enfoque (ORP) aproximado
+    // Encuentra el punto "medio" (ORP) de la palabra
     int midpoint = (currentWord.length / 2).floor();
     int orp = currentWord.length <= 3 ? 1 : midpoint;
 
@@ -511,10 +508,10 @@ class _ReadPageState extends State<ReadPage>
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const Spacer(),
+          // Con AnimatedSwitcher pero sin transiciones de fade
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 100),
-            switchInCurve: Curves.easeIn,
-            switchOutCurve: Curves.easeOut,
+            duration: Duration.zero, // Sin retraso
+            transitionBuilder: (child, animation) => child, // Sin animación
             child: Text(
               currentWord,
               key: ValueKey(currentWordIndex),
@@ -527,7 +524,7 @@ class _ReadPageState extends State<ReadPage>
             ),
           ),
           const SizedBox(height: 20),
-          // Visualización del ORP (Optimal Recognition Point)
+          // Visualización ORP (Optimal Recognition Point)
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.center,
